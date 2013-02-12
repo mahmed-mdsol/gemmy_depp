@@ -65,10 +65,18 @@ doc = XlsxWriter::Document.new
 sheet1 = doc.add_sheet 'Used in Released Products'
 sheet1.add_row ['Free & Open Source Software (FOSS) Usage [in Medidata Products]']
 sheet1.add_row []
-sheet1.add_row ['FOSS Software Name', 'Version', 'Requestor', 'License', 'For Use in Medidata Products', 'URL of Software Application']
-sheet1.add_autofilter 'A3:F3'
+sheet1.add_row ['FOSS Software Name', 'Version', 'Requestor', 'License', 'For Use in Medidata Products', 'URL of Software Application', 'Internal Repository']
+sheet1.add_autofilter 'A3:G3'
 gems.sort_by{|((gem_name, _), _)| gem_name}.each do |(gem_name, gem_version, gem_source), repos_using_gem|
-  sheet1.add_row [gem_name, gem_version, '', '', repos_using_gem.join(', '), gem_source]
+  sheet1.add_row [
+    gem_name,
+    gem_version,
+    '', # Requestor
+    '', # License
+    repos_using_gem.join(', '),
+    gem_source,
+    (gem_source && "#{gem_source}".include?('github.com:mdsol/')) ? 'yes' : 'no'
+  ]
 end
 require 'fileutils'
 FileUtils.mv doc.path, "./foss.xlsx"
