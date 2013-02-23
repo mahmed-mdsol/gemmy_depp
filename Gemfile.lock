@@ -12,6 +12,7 @@ GEM
       faraday (>= 0.7.4, < 0.9)
     fast_xs (0.8.0)
     gemnasium-parser (0.1.9)
+    gems (0.7.0)
     hashie (1.2.0)
     i18n (0.6.1)
     multi_json (1.5.0)
@@ -36,5 +37,6 @@ PLATFORMS
 DEPENDENCIES
   bundler (~> 1.2.1)
   gemnasium-parser (= 0.1.9)
-  octokit (= 1.22.0)
-  xlsx_writer
+  gems (~> 0.7.0)
+  octokit (~> 1.22.0)
+  xlsx_writer (~> 0.4.0)
