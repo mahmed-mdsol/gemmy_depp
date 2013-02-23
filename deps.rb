@@ -25,10 +25,14 @@ module Bundler
   end
 end
 
+class Gemmy < OpenStruct
+end
+
 class RepoData < Struct.new(:owner, :name, :branch)
   attr_accessor :dependencies
 
   @@info_cache = {}
+  @@gemmy_cache = {}
 
   def dependencies
     @dependencies ||= []
@@ -40,6 +44,9 @@ class RepoData < Struct.new(:owner, :name, :branch)
 
   def specs
     @specs ||= {}
+  end
+
+  def license(gemmy)
   end
 
   def github_url(spec)
@@ -57,7 +64,7 @@ class RepoData < Struct.new(:owner, :name, :branch)
   end
 
   def make_a_gem(spec)
-    OpenStruct.new(
+    @@gemmy_cache[[spec.name, spec.version]] ||= Gemmy.new(
       :name => spec.name,
       :version => spec.version.to_s,
       :github_url => github_url(spec),
@@ -70,30 +77,10 @@ class RepoData < Struct.new(:owner, :name, :branch)
   def refined_gems
     puts "Refining gems for #{self}"
     gems = []
-    # all_gem_dependencies = Marshal.load(open("http://rubygems.org/api/v1/dependencies?gems=#{dependencies.collect(&:name).join(',')}"))
 
     gem_groups = dependencies.each_with_object({}) do |dependency, hash|
       spec = specs[dependency.name]
       if spec && gemmy = make_a_gem(spec)
-        # gem_dependencies_hash = all_gem_dependencies.detect{|h| h[:name] == gemmy.name && h[:version] == gemmy.version}
-        # if gem_dependencies_hash.nil?
-        #   if gemmy.github_url =~ /github.com\/([^\/]+\/[^\/]+)/ # client.contents(github_url(spec)[])
-        #     # We have a github url so we know the repo full name (e.g. github.com/rails/rails => rails/rails)
-        #     begin
-        #       gemspec = Gemnasium::Parser.gemspec(decoded_content(
-        #         client.contents($1, :path => "#{gemmy.name}.gemspec", :ref => gemmy.git_reference).content
-        #       ))
-        #       gemmy.dependent_gems = gemspec.dependencies.collect{|dep| specs[dep.name]}
-        #     rescue
-        #       debugger
-        #       gemmy.dependent_gems = []
-        #     end
-        #   else
-        #     # ¯\_(ツ)_/¯.
-        #   end
-        # else
-        #   gemmy.dependent_gems = gem_dependencies_hash[:dependencies].collect{|(name, requirement)| make_a_gem(specs[name])}
-        # end
         gemmy.dependent_gems = spec.dependencies.collect do |dep|
           if specs[dep.name]
             make_a_gem(specs[dep.name])
@@ -101,7 +88,7 @@ class RepoData < Struct.new(:owner, :name, :branch)
             puts "Hm, looks like we don't have a spec for #{dep.name} for #{gemmy.name}"
           end
         end.compact
-        dependency.groups.each{|group| (hash[group] ||= []).concat([gemmy, *gemmy.dependent_gems])}
+        dependency.groups.each{|group| (hash[group] ||= Set.new).merge([gemmy, *gemmy.dependent_gems])}
       else
         puts "Oh noes, no spec for #{dependency.name}"
       end
@@ -124,7 +111,7 @@ end
 
 def add_dependency_for(repo, dependency)
   repo.specs[dependency.name] = dependency
-  (repos_using_gem[dependency.name] ||= []) << repo
+  (repos_using_gem[dependency.name] ||= Set.new) << repo
 end
 
 def decoded_content(content)
@@ -201,13 +188,13 @@ def fill_sheet(sheet, gems)
     'Internal Repository'
   ]
   sheet.add_autofilter 'A3:G3'
-  gems.sort_by(&:name).each do |gemmy|
+  gems.sort_by{|g| [g.name, g.version]}.each do |gemmy|
     sheet.add_row [
       gemmy.name,
       gemmy.version,
       '', # Requestor
       '', # License
-      repos_using_gem[gemmy.name].join(', '),
+      repos_using_gem[gemmy.name].to_a.join(', '),
       "#{gemmy.github_url.blank? ? gemmy.source : gemmy.github_url}",
       (gemmy.source && "#{gemmy.source}".include?('github.com:mdsol/')) ? 'yes' : 'no'
     ]
@@ -215,8 +202,8 @@ def fill_sheet(sheet, gems)
 end
 
 doc = XlsxWriter::Document.new
-fill_sheet(doc.add_sheet('Used in Released Products'), prod_gems)
-fill_sheet(doc.add_sheet('Used Internally at Medidata'), dev_gems)
+fill_sheet(doc.add_sheet('Used_in_Released_Products'), prod_gems)
+fill_sheet(doc.add_sheet('Used_Internally_at_Medidata'), dev_gems)
 
 require 'fileutils'
 FileUtils.mv doc.path, "./foss.xlsx"
