@@ -111,7 +111,7 @@ end
 
 def add_dependency_for(repo, dependency)
   repo.specs[dependency.name] = dependency
-  (repos_using_gem[dependency.name] ||= Set.new) << repo
+  (repos_using_gem[[dependency.name, dependency.version.to_s]] ||= Set.new) << repo
 end
 
 def decoded_content(content)
@@ -194,7 +194,7 @@ def fill_sheet(sheet, gems)
       gemmy.version,
       '', # Requestor
       '', # License
-      repos_using_gem[gemmy.name].to_a.join(', '),
+      repos_using_gem[[gemmy.name, gemmy.version]].to_a.join(', '),
       "#{gemmy.github_url.blank? ? gemmy.source : gemmy.github_url}",
       (gemmy.source && "#{gemmy.source}".include?('github.com:mdsol/')) ? 'yes' : 'no'
     ]
