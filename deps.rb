@@ -7,6 +7,8 @@ require 'open-uri'
 require 'ostruct'
 require 'xlsx_writer'
 
+require 'ruby-debug'
+
 module Gemnasium
   module Parser
     class Gemfile
@@ -26,6 +28,59 @@ module Bundler
 end
 
 class Gemmy < OpenStruct
+  # Adapted from https://github.com/dblock/gem-licenses/blob/master/lib/gem_specification.rb
+  LICENSE_REGEXES = [
+    /See the (?<l>.+) Licen[sc]e/i,
+    /(?<l>MIT|GPL|BSD).LICEN[SC]E/i,
+    /(?<l>GNU General Public).Licen[cs]e/i,
+    /(?<l>GPL version \d+)/i,
+    /same license as [^\w]*(?<l>[\s\w]+)/i,
+    /(?:released|available) under (?:the|a|an) [^\w]*(?<l>[\s\w]+)(?:-style)?[^\w]* license/i,
+    /^[^\w]*(?<l>[\s\w]+)[^\w]* License, see/i,
+    /^(?<l>[\w]+)[^\w]* license$/i,
+    /\(the [^\w]*(?<l>[\s\w]+)[^\w]* license\)/i,
+    /^license: [^\w]*(?<l>[\s\w]+)/i,
+    /^released under the [^\w]*(?<l>[\s\w]+)[^\w]* license/i,
+  ]
+
+  def extract_licenses
+    if @licenses.nil? && github_url =~ /github.com\/([^\/]+\/[^\/]+)/i
+      full_repo_name = $1
+      possible_licenses = []
+      client.tree(full_repo_name, git_reference || 'master').tree.each do |twig|
+        if twig.type == 'blob' && twig.path =~ /licen[sc]e.*|readme.*/i
+          sap = decoded_content(client.contents(full_repo_name, :path => twig.path, :ref => git_reference || 'master').content)
+          regex = LICENSE_REGEXES.detect{|r| sap.match(r)}
+          if regex && match = sap.match(regex)
+            # debugger if (match['l'] || '').strip != 'MIT'
+            possible_licenses << match['l'].strip
+          elsif twig.path =~ /licen[sc]e/i
+            @license_url = "#{github_url}/#{twig.path}" unless github_url.blank?
+          end
+        end
+      end
+      @licenses = possible_licenses.uniq
+    end
+  rescue => e
+    puts "Exception: #{e}"
+    puts e.backtrace
+    @licenses = []
+  end
+
+  def licenses
+    extract_licenses
+    @licenses
+  end
+
+  def license
+    extract_licenses
+    [*@licenses].select{|l| l.length >= 3}.join(', ')
+  end
+
+  def license_url
+    extract_licenses
+    @license_url
+  end
 end
 
 class RepoData < Struct.new(:owner, :name, :branch)
@@ -33,6 +88,8 @@ class RepoData < Struct.new(:owner, :name, :branch)
 
   @@info_cache = {}
   @@gemmy_cache = {}
+
+  GITHUB_SOURCE_REGEX = /^git@github.com:(.+).git \(at (.+)\)$/ # => https://github.com/$1/tree/$2
 
   def dependencies
     @dependencies ||= []
@@ -46,11 +103,8 @@ class RepoData < Struct.new(:owner, :name, :branch)
     @specs ||= {}
   end
 
-  def license(gemmy)
-  end
-
   def github_url(spec)
-    if spec.source.to_s =~ /^git@github.com:(.+).git \(at (.+)\)$/ # => https://github.com/$1/tree/$2
+    if spec.source.to_s =~ GITHUB_SOURCE_REGEX
       "http://github.com/#{$1}/tree/#{$2}"
     else
       (@@info_cache[spec.name] ||= Gems.info(spec.name))['source_code_uri']
@@ -58,9 +112,7 @@ class RepoData < Struct.new(:owner, :name, :branch)
   end
 
   def git_reference(spec)
-    if spec.source.to_s =~ /^git@github.com:(.+).git \(at (.+)\)$/ # => https://github.com/$1/tree/$2
-      $2
-    end
+    $2 if spec.source.to_s =~ GITHUB_SOURCE_REGEX
   end
 
   def make_a_gem(spec)
@@ -183,6 +235,7 @@ def fill_sheet(sheet, gems)
     'Version',
     'Requestor',
     'License',
+    'License URL',
     'For Use in Medidata Products',
     'URL of Software Application',
     'Internal Repository'
@@ -193,7 +246,8 @@ def fill_sheet(sheet, gems)
       gemmy.name,
       gemmy.version,
       '', # Requestor
-      '', # License
+      gemmy.tap{|g| puts "#{g.name} license = #{g.license}"}.license, # License
+      gemmy.license_url, # License URL
       repos_using_gem[[gemmy.name, gemmy.version]].to_a.join(', '),
       "#{gemmy.github_url.blank? ? gemmy.source : gemmy.github_url}",
       (gemmy.source && "#{gemmy.source}".include?('github.com:mdsol/')) ? 'yes' : 'no'
