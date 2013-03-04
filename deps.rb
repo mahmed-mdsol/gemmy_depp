@@ -31,7 +31,7 @@ class Gemmy < OpenStruct
   # Adapted from https://github.com/dblock/gem-licenses/blob/master/lib/gem_specification.rb
   LICENSE_REGEXES = [
     /See the (?<l>.+) Licen[sc]e/i,
-    /(?<l>MIT|GPL|BSD).LICEN[SC]E/i,
+    /(?<l>MIT|L?GPL|BSD|Apache).LICEN[SC]E/i,
     /(?<l>GNU General Public).Licen[cs]e/i,
     /(?<l>GPL version \d+)/i,
     /same license as [^\w]*(?<l>[\s\w]+)/i,
@@ -43,16 +43,26 @@ class Gemmy < OpenStruct
     /^released under the [^\w]*(?<l>[\s\w]+)[^\w]* license/i,
   ]
 
+  def licenses_per_rubygems
+    versions = Gems.versions(name)
+    if versions.respond_to?(:detect)
+      version_data = versions.detect{|v| v['number'] == version} || {}
+      [*version_data['licenses']]
+    else
+      []
+    end
+  end
+
   def extract_licenses
     if @licenses.nil? && github_url =~ /github.com\/([^\/]+\/[^\/]+)/i
       full_repo_name = $1
-      possible_licenses = []
+      possible_licenses = licenses_per_rubygems
+      # If Rubygems doesn't know the license, let's try to figure it out ourselves.
       client.tree(full_repo_name, git_reference || 'master').tree.each do |twig|
         if twig.type == 'blob' && twig.path =~ /licen[sc]e.*|readme.*/i
           sap = decoded_content(client.contents(full_repo_name, :path => twig.path, :ref => git_reference || 'master').content)
           regex = LICENSE_REGEXES.detect{|r| sap.match(r)}
           if regex && match = sap.match(regex)
-            # debugger if (match['l'] || '').strip != 'MIT'
             possible_licenses << match['l'].strip
           elsif twig.path =~ /licen[sc]e/i
             @license_url = "#{github_url}/#{twig.path}" unless github_url.blank?
@@ -154,7 +164,7 @@ end
 
 
 def client
-  @client ||= Octokit::Client.new(:login => ENV['GITHUB_USERNAME'], :oauth_token => ENV['GITHUB_AUTH_TOKEN'])
+  @client ||= Octokit::Client.new(:login => ENV['GITHUB_USERNAME'], :oauth_token => ENV['GITHUB_AUTH_TOKEN'], :auto_traversal => true)
 end
 
 def repos_using_gem
