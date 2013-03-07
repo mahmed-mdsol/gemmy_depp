@@ -20,13 +20,6 @@ module Gemnasium
   end
 end
 
-module Bundler
-  class Dependency
-    attr_accessor :line # written to by Gemnasium::Parser and read by me when doing a git blame!
-    attr_accessor :committer # written to by me to store who last touched the Gemfile at this line.
-  end
-end
-
 class Gemmy < OpenStruct
   # Adapted from https://github.com/dblock/gem-licenses/blob/master/lib/gem_specification.rb
   LICENSE_REGEXES = [
@@ -91,6 +84,14 @@ class Gemmy < OpenStruct
     extract_licenses
     @license_url
   end
+
+  def requestors
+    @requestors ||= {}
+  end
+
+  def set_requestor(repo_name, committer_name)
+    requestors[repo_name] = committer_name
+  end
 end
 
 class RepoData < Struct.new(:owner, :name, :branch)
@@ -113,11 +114,44 @@ class RepoData < Struct.new(:owner, :name, :branch)
     @specs ||= {}
   end
 
+  def blame_data
+    @blame_data ||= begin
+      dependency_committers = dependencies.each_with_object({}){|d, h| h[d.name] = nil}
+      num_dependencies = dependency_committers.keys.count
+      client.commits(full_name, branch, :path => 'Gemfile').sort_by{|c| c.commit.committer.date}.reverse.each do |commit_data_hash|
+        committer = commit_data_hash.commit.committer.name
+        diff = client.commit(full_name, commit_data_hash.sha).files.detect{|f| f.filename == 'Gemfile'}.patch
+        diff.scan(/^\+(.*)$/).flatten.collect{|l| match = l.match(Gemnasium::Parser::Patterns::GEM_CALL) and match['name']}.compact.each do |gem_name|
+          if dependency_committers.key?(gem_name) && dependency_committers[gem_name].nil?
+            dependency_committers[gem_name] = committer
+            num_dependencies -= 1
+          end
+        end
+        break if num_dependencies <= 0
+      end
+      # puts "blame_data for #{full_name}:"
+      # puts dependency_committers
+      dependency_committers
+    end
+  end
+
+  def number_of_downloads(spec)
+    versions = Gems.versions(spec.name)
+    version_number = spec.version.to_s
+    if versions.respond_to?(:detect) && version_data = versions.detect{|vh| vh['number'] == version_number}
+      version_data['downloads_count']
+    end
+  end
+
+  def gem_info(gem_name)
+    @@info_cache[gem_name] ||= Gems.info(gem_name)
+  end
+
   def github_url(spec)
     if spec.source.to_s =~ GITHUB_SOURCE_REGEX
       "http://github.com/#{$1}/tree/#{$2}"
     else
-      (@@info_cache[spec.name] ||= Gems.info(spec.name))['source_code_uri']
+      gem_info(spec.name)['source_code_uri']
     end
   end
 
@@ -125,15 +159,18 @@ class RepoData < Struct.new(:owner, :name, :branch)
     $2 if spec.source.to_s =~ GITHUB_SOURCE_REGEX
   end
 
-  def make_a_gem(spec)
-    @@gemmy_cache[[spec.name, spec.version]] ||= Gemmy.new(
+  def make_a_gem(spec, committer=nil)
+    gemmy = @@gemmy_cache[[spec.name, spec.version]] ||= Gemmy.new(
       :name => spec.name,
       :version => spec.version.to_s,
       :github_url => github_url(spec),
       :git_reference => git_reference(spec),
       :source => spec.source,
-      :spec => spec
+      :spec => spec,
+      :downloads => number_of_downloads(spec)
     )
+    gemmy.set_requestor(self.to_s, committer)
+    gemmy
   end
 
   def refined_gems
@@ -142,10 +179,11 @@ class RepoData < Struct.new(:owner, :name, :branch)
 
     gem_groups = dependencies.each_with_object({}) do |dependency, hash|
       spec = specs[dependency.name]
-      if spec && gemmy = make_a_gem(spec)
+      committer = nil #blame_data[dependency.name]
+      if spec && gemmy = make_a_gem(spec, committer)
         gemmy.dependent_gems = spec.dependencies.collect do |dep|
           if specs[dep.name]
-            make_a_gem(specs[dep.name])
+            make_a_gem(specs[dep.name], committer)
           else
             puts "Hm, looks like we don't have a spec for #{dep.name} for #{gemmy.name}"
           end
@@ -193,8 +231,8 @@ def note_dependencies_for(repo, branch_name)
   if gemfile_blob
     # Gem groups can be collected from the Gemfile
     puts "Parsing #{repo.full_name}@#{branch_name}'s Gemfile"
-    gemfile = Gemnasium::Parser.gemfile(decoded_content(gemfile_blob.content))
-    repo_data.dependencies = gemfile.dependencies
+    repo_data.gemfile = Gemnasium::Parser.gemfile(decoded_content(gemfile_blob.content))
+    repo_data.dependencies = repo_data.gemfile.dependencies
   else
     puts "Couldn't find a Gemfile in #{repo.full_name}@#{branch_name}"
   end
@@ -203,6 +241,7 @@ def note_dependencies_for(repo, branch_name)
     puts "Parsing #{repo.full_name}@#{branch_name}'s Gemfile.lock"
     lockfile = Bundler::LockfileParser.new(decoded_content(lock_blob.content))
     lockfile.specs.each{|spec| add_dependency_for(repo_data, spec)}
+    repo_data.lockfile = lockfile
   else
     puts "Couldn't find a Gemfile.lock in #{repo.full_name}@#{branch_name}"
   end
@@ -221,7 +260,7 @@ else
       note_dependencies_for(repo, branch_name)
     end
   end
-  File.open('all_repo_data.dump', 'w'){|f| f.print Marshal.dump(all_repo_data)}
+  # File.open('all_repo_data.dump', 'w'){|f| f.print Marshal.dump(all_repo_data)}
 end
 
 all_repo_data.each do |repo_data|
@@ -248,19 +287,21 @@ def fill_sheet(sheet, gems)
     'License URL',
     'For Use in Medidata Products',
     'URL of Software Application',
-    'Internal Repository'
+    'Internal Repository',
+    'Number of Downloads'
   ]
   sheet.add_autofilter 'A3:G3'
   gems.sort_by{|g| [g.name, g.version]}.each do |gemmy|
     sheet.add_row [
       gemmy.name,
       gemmy.version,
-      '', # Requestor
+      '',#gemmy.requestors.values.uniq.join(', '), # Requestor
       gemmy.tap{|g| puts "#{g.name} license = #{g.license}"}.license, # License
       gemmy.license_url, # License URL
       repos_using_gem[[gemmy.name, gemmy.version]].to_a.join(', '),
       "#{gemmy.github_url.blank? ? gemmy.source : gemmy.github_url}",
-      (gemmy.source && "#{gemmy.source}".include?('github.com:mdsol/')) ? 'yes' : 'no'
+      (gemmy.source && "#{gemmy.source}".include?('github.com:mdsol/')) ? 'yes' : 'no',
+      gemmy.downloads
     ]
   end
 end
